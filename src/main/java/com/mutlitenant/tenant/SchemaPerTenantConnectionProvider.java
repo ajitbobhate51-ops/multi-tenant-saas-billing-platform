@@ -2,7 +2,6 @@ package com.mutlitenant.tenant;
 
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.sql.Statement;
 
 import javax.sql.DataSource;
 
@@ -13,22 +12,23 @@ import org.springframework.stereotype.Component;
 public class SchemaPerTenantConnectionProvider implements MultiTenantConnectionProvider<String> {
 
 	private final DataSource dataSource;
-
 	private final TenantProperties properties;
+	private final TenantRegistryLookup tenantRegistryLookup;
 
-	public SchemaPerTenantConnectionProvider(DataSource dataSource, TenantProperties properties) {
+	public SchemaPerTenantConnectionProvider(
+			DataSource dataSource,
+			TenantProperties properties,
+			TenantRegistryLookup tenantRegistryLookup) {
+
 		this.dataSource = dataSource;
 		this.properties = properties;
+		this.tenantRegistryLookup = tenantRegistryLookup;
 	}
 
 	@Override
 	public Connection getAnyConnection() throws SQLException {
 		Connection connection = dataSource.getConnection();
-		String schema = defaultSchema();
-		if (properties.isCreateSchema()) {
-			createSchema(connection, schema);
-		}
-		connection.setSchema(schema);
+		connection.setSchema(defaultSchema());
 		return connection;
 	}
 
@@ -39,11 +39,8 @@ public class SchemaPerTenantConnectionProvider implements MultiTenantConnectionP
 
 	@Override
 	public Connection getConnection(String tenantIdentifier) throws SQLException {
-		String schema = resolveSchema(tenantIdentifier);
+		String schema = resolveActiveSchema(tenantIdentifier);
 		Connection connection = getAnyConnection();
-		if (properties.isCreateSchema() && !schema.equals(defaultSchema())) {
-			createSchema(connection, schema);
-		}
 		connection.setSchema(schema);
 		return connection;
 	}
@@ -65,7 +62,8 @@ public class SchemaPerTenantConnectionProvider implements MultiTenantConnectionP
 
 	@Override
 	public boolean isUnwrappableAs(Class<?> unwrapType) {
-		return unwrapType.isAssignableFrom(getClass()) || unwrapType.isAssignableFrom(dataSource.getClass());
+		return unwrapType.isAssignableFrom(getClass())
+				|| unwrapType.isAssignableFrom(dataSource.getClass());
 	}
 
 	@Override
@@ -73,34 +71,34 @@ public class SchemaPerTenantConnectionProvider implements MultiTenantConnectionP
 		if (unwrapType.isAssignableFrom(getClass())) {
 			return unwrapType.cast(this);
 		}
+
 		if (unwrapType.isAssignableFrom(dataSource.getClass())) {
 			return unwrapType.cast(dataSource);
 		}
+
 		return null;
 	}
 
-	private String resolveSchema(String tenantIdentifier) {
+	private String resolveActiveSchema(String tenantIdentifier) throws SQLException {
 		String tenant = TenantIdentifier.normalize(tenantIdentifier);
-		return tenant == null ? defaultSchema() : tenant;
+
+		try {
+			return tenant == null
+					? defaultSchema()
+					: tenantRegistryLookup.requireActiveSchema(tenant);
+		}
+		catch (TenantNotFoundException | TenantAccessException ex) {
+			throw new SQLException(ex.getMessage(), ex);
+		}
 	}
 
 	private String defaultSchema() {
 		return TenantIdentifier.normalize(properties.getDefaultTenant());
 	}
 
-	private void createSchema(Connection connection, String schema) throws SQLException {
-		try (Statement statement = connection.createStatement()) {
-			statement.execute("create schema if not exists " + schema);
-		}
-	}
-
 	private void resetAndClose(Connection connection) throws SQLException {
 		try {
-			String schema = defaultSchema();
-			if (properties.isCreateSchema()) {
-				createSchema(connection, schema);
-			}
-			connection.setSchema(schema);
+			connection.setSchema(defaultSchema());
 		}
 		finally {
 			connection.close();

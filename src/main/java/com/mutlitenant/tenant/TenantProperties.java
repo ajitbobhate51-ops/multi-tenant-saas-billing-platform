@@ -9,7 +9,7 @@ public class TenantProperties {
 
 	private String defaultTenant = "public";
 
-	private boolean createSchema = true;
+	private String tenantMigrationLocation = "classpath:db/tenant";
 
 	public String getHeaderName() {
 		return headerName;
@@ -27,11 +27,11 @@ public class TenantProperties {
 		this.defaultTenant = defaultTenant;
 	}
 
-	public boolean isCreateSchema() {
-		return createSchema;
+	public String getTenantMigrationLocation() {
+		return tenantMigrationLocation;
 	}
 
-	public void setCreateSchema(boolean createSchema) {
-		this.createSchema = createSchema;
+	public void setTenantMigrationLocation(String tenantMigrationLocation) {
+		this.tenantMigrationLocation = tenantMigrationLocation;
 	}
 }

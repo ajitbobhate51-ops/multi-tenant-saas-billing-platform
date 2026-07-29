@@ -25,7 +25,8 @@ public class SecurityConfiguration {
 
 	@Bean
 	SecurityFilterChain securityFilterChain(HttpSecurity http, PlatformAdminTokenFilter platformAdminTokenFilter,
-			JwtAuthenticationFilter jwtAuthenticationFilter, SecurityErrorWriter securityErrorWriter) throws Exception {
+			JwtAuthenticationFilter jwtAuthenticationFilter, TenantFilter tenantFilter, SecurityErrorWriter securityErrorWriter)
+			throws Exception {
 		return http
 				.csrf(csrf -> csrf.disable())
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -41,6 +42,7 @@ public class SecurityConfiguration {
 						.anyRequest().authenticated())
 				.addFilterBefore(platformAdminTokenFilter, UsernamePasswordAuthenticationFilter.class)
 				.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+				.addFilterAfter(tenantFilter, JwtAuthenticationFilter.class)
 				.build();
 	}
 
@@ -53,6 +55,12 @@ public class SecurityConfiguration {
 	JwtAuthenticationFilter jwtAuthenticationFilter(JwtDecoder jwtDecoder, TenantRegistryLookup tenantRegistryLookup,
 			SecurityErrorWriter securityErrorWriter) {
 		return new JwtAuthenticationFilter(jwtDecoder, tenantRegistryLookup, securityErrorWriter);
+	}
+
+	@Bean
+	TenantFilter tenantFilter(TenantProperties tenantProperties, TenantResolver tenantResolver,
+			SecurityErrorWriter securityErrorWriter) {
+		return new TenantFilter(tenantProperties, tenantResolver, securityErrorWriter);
 	}
 
 	@Bean

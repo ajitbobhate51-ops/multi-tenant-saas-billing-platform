@@ -2,6 +2,7 @@ package com.multitenant.tenant;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -21,6 +22,11 @@ public class TenantExceptionHandler {
 			.map(error -> error.getField() + " " + error.getDefaultMessage())
 			.orElse("Request validation failed");
 		return ResponseEntity.badRequest().body(ApiErrorResponse.of("VALIDATION_FAILED", message));
+	}
+
+	@ExceptionHandler(BadCredentialsException.class)
+	public ResponseEntity<ApiErrorResponse> badCredentials(BadCredentialsException ex) {
+		return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiErrorResponse.of("UNAUTHENTICATED", "Invalid credentials"));
 	}
 
 	@ExceptionHandler(TenantConflictException.class)

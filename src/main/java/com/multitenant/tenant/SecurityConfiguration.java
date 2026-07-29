@@ -1,0 +1,72 @@
+package com.multitenant.tenant;
+
+import com.nimbusds.jose.jwk.source.ImmutableSecret;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+@EnableConfigurationProperties(SecurityProperties.class)
+public class SecurityConfiguration {
+
+	@Bean
+	SecurityFilterChain securityFilterChain(HttpSecurity http, PlatformAdminTokenFilter platformAdminTokenFilter,
+			JwtAuthenticationFilter jwtAuthenticationFilter, SecurityErrorWriter securityErrorWriter) throws Exception {
+		return http
+				.csrf(csrf -> csrf.disable())
+				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+				.exceptionHandling(exceptions -> exceptions
+						.authenticationEntryPoint((request, response, authException) -> securityErrorWriter.write(response,
+								HttpStatus.UNAUTHORIZED.value(), "UNAUTHENTICATED", "Authentication is required"))
+						.accessDeniedHandler((request, response, accessDeniedException) -> securityErrorWriter.write(response,
+								HttpStatus.FORBIDDEN.value(), "FORBIDDEN", "Access denied")))
+				.authorizeHttpRequests(authorize -> authorize
+						.requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/tenants/*/users/bootstrap").permitAll()
+						.requestMatchers("/api/tenants/**").hasAuthority(PlatformAdminTokenFilter.PLATFORM_ADMIN)
+						.anyRequest().authenticated())
+				.addFilterBefore(platformAdminTokenFilter, UsernamePasswordAuthenticationFilter.class)
+				.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+				.build();
+	}
+
+	@Bean
+	PlatformAdminTokenFilter platformAdminTokenFilter(SecurityProperties properties, SecurityErrorWriter securityErrorWriter) {
+		return new PlatformAdminTokenFilter(properties, securityErrorWriter);
+	}
+
+	@Bean
+	JwtAuthenticationFilter jwtAuthenticationFilter(JwtDecoder jwtDecoder, TenantRegistryLookup tenantRegistryLookup,
+			SecurityErrorWriter securityErrorWriter) {
+		return new JwtAuthenticationFilter(jwtDecoder, tenantRegistryLookup, securityErrorWriter);
+	}
+
+	@Bean
+	PasswordEncoder passwordEncoder() {
+		return new BCryptPasswordEncoder();
+	}
+
+	@Bean
+	JwtEncoder jwtEncoder(SecurityProperties properties) {
+		return new NimbusJwtEncoder(new ImmutableSecret<>(properties.jwtSigningKey()));
+	}
+
+	@Bean
+	JwtDecoder jwtDecoder(SecurityProperties properties) {
+		return NimbusJwtDecoder.withSecretKey(properties.jwtSigningKey()).build();
+	}
+}

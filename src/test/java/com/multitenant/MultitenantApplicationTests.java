@@ -34,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -416,6 +417,122 @@ class MultitenantApplicationTests {
 				.andExpect(jsonPath("$[?(@.name == 'Alice A')]").doesNotExist());
 	}
 
+	@Test
+	void tenantAdminCanCreateListDisableTenantUserAndDisabledUserCannotLogin() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_admin", "Tenant Rbac Admin", "tenant_rbac_admin",
+				"admin@rbac-admin.test");
+
+		long userId = createTenantUser(adminToken, "user@rbac-admin.test", "TENANT_USER")
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.email").value("user@rbac-admin.test"))
+				.andExpect(jsonPath("$.role").value("TENANT_USER"))
+				.andExpect(jsonPath("$.passwordHash").doesNotExist())
+				.andReturn()
+				.getResponse()
+				.getContentAsString()
+				.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1")
+				.lines()
+				.mapToLong(Long::parseLong)
+				.findFirst()
+				.orElseThrow();
+
+		TenantUser created = executeInTenant("tenant_rbac_admin",
+				entityManager -> tenantUserRepository.findByEmailIgnoreCase("user@rbac-admin.test").orElseThrow());
+		assertThat(created.getPasswordHash()).isNotEqualTo(PASSWORD);
+		assertThat(created.getPasswordHash()).startsWith("$2");
+
+		String userToken = login("tenant_rbac_admin", "user@rbac-admin.test", PASSWORD);
+		mockMvc.perform(get("/customers").header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/api/tenant/users").header("Authorization", bearer(userToken)))
+				.andExpect(status().isForbidden());
+		mockMvc.perform(post("/api/tenant/users")
+				.header("Authorization", bearer(userToken))
+				.contentType("application/json")
+				.content("""
+						{"email":"blocked@rbac-admin.test","password":"change-me-123","role":"TENANT_USER"}
+						"""))
+				.andExpect(status().isForbidden());
+
+		mockMvc.perform(get("/api/tenant/users").header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.email == 'admin@rbac-admin.test')]").exists())
+				.andExpect(jsonPath("$[?(@.email == 'user@rbac-admin.test')]").exists());
+
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", userId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.enabled").value(false));
+
+		mockMvc.perform(post("/api/auth/login")
+				.contentType("application/json")
+				.content("""
+						{"tenantId":"tenant_rbac_admin","email":"user@rbac-admin.test","password":"change-me-123"}
+						"""))
+				.andExpect(status().isUnauthorized())
+				.andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+	}
+
+	@Test
+	void tenantUserManagementRejectsDuplicateEmailAndInvalidRole() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_duplicate", "Tenant Rbac Duplicate",
+				"tenant_rbac_duplicate", "admin@rbac-duplicate.test");
+		createTenantUser(adminToken, "user@rbac-duplicate.test", "TENANT_USER").andExpect(status().isCreated());
+
+		createTenantUser(adminToken, "USER@rbac-duplicate.test", "TENANT_USER")
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.code").value("TENANT_CONFLICT"));
+		mockMvc.perform(post("/api/tenant/users")
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"email":"bad-role@rbac-duplicate.test","password":"change-me-123","role":"PLATFORM_ADMIN"}
+						"""))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+	}
+
+	@Test
+	void tenantAdminCannotManageAnotherTenantsUsers() throws Exception {
+		String tenantAToken = registerBootstrapAndLogin("tenant_rbac_cross_a", "Tenant Rbac Cross A",
+				"tenant_rbac_cross_a", "admin@rbac-cross-a.test");
+		registerBootstrapAndLogin("tenant_rbac_cross_b", "Tenant Rbac Cross B", "tenant_rbac_cross_b",
+				"admin@rbac-cross-b.test");
+
+		mockMvc.perform(get("/api/tenant/users")
+				.header("Authorization", bearer(tenantAToken))
+				.header("X-Tenant-ID", "tenant_rbac_cross_b"))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
+		mockMvc.perform(post("/api/tenant/users")
+				.header("Authorization", bearer(tenantAToken))
+				.header("X-Tenant-ID", "tenant_rbac_cross_b")
+				.contentType("application/json")
+				.content("""
+						{"email":"user@rbac-cross-b.test","password":"change-me-123","role":"TENANT_USER"}
+						"""))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
+	}
+
+	@Test
+	void platformAdministrationRemainsSeparateFromTenantJwtRoles() throws Exception {
+		String tenantAdminToken = registerBootstrapAndLogin("tenant_rbac_platform", "Tenant Rbac Platform",
+				"tenant_rbac_platform", "admin@rbac-platform.test");
+
+		mockMvc.perform(get("/api/tenants").header("Authorization", bearer(tenantAdminToken)))
+				.andExpect(status().isForbidden());
+		mockMvc.perform(get("/api/tenants").header("Authorization",
+				bearer(tokenWithRole("tenant_rbac_platform", "admin@rbac-platform.test", "PLATFORM_ADMIN"))))
+				.andExpect(status().isUnauthorized())
+				.andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+		mockMvc.perform(get("/api/tenants").header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
+				.andExpect(status().isOk());
+	}
 	private void insertUsageRecord(String tenant, Long id, String description) {
 		executeInTenant(tenant, entityManager -> {
 			entityManager.createNativeQuery("create table if not exists phase1_usage_record "
@@ -490,10 +607,34 @@ class MultitenantApplicationTests {
 		return response.replaceAll(".*\\\"accessToken\\\":\\\"([^\\\"]+)\\\".*", "$1");
 	}
 
+
+	private org.springframework.test.web.servlet.ResultActions createTenantUser(String adminToken, String email, String role)
+			throws Exception {
+		return mockMvc.perform(post("/api/tenant/users")
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"email":"%s","password":"%s","role":"%s"}
+						""".formatted(email, PASSWORD, role)));
+	}
 	private String bearer(String token) {
 		return "Bearer " + token;
 	}
 
+
+	private String tokenWithRole(String tenantId, String email, String role) {
+		Instant now = Instant.now();
+		JwtClaimsSet claims = JwtClaimsSet.builder()
+				.issuer("multitenant-test")
+				.issuedAt(now)
+				.expiresAt(now.plusSeconds(3600))
+				.subject(email)
+				.claim("tenant_id", tenantId)
+				.claim("role", role)
+				.build();
+		return jwtEncoder.encode(JwtEncoderParameters.from(JwsHeader.with(MacAlgorithm.HS256).build(), claims))
+				.getTokenValue();
+	}
 	private String expiredToken(String tenantId, String email) {
 		Instant now = Instant.now();
 		JwtClaimsSet claims = JwtClaimsSet.builder()

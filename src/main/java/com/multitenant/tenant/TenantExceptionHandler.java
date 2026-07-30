@@ -2,6 +2,7 @@ package com.multitenant.tenant;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -24,6 +25,11 @@ public class TenantExceptionHandler {
 		return ResponseEntity.badRequest().body(ApiErrorResponse.of("VALIDATION_FAILED", message));
 	}
 
+	@ExceptionHandler(HttpMessageNotReadableException.class)
+	public ResponseEntity<ApiErrorResponse> unreadable(HttpMessageNotReadableException ex) {
+		return ResponseEntity.badRequest().body(ApiErrorResponse.of("BAD_REQUEST", "Request body is invalid"));
+	}
+
 	@ExceptionHandler(BadCredentialsException.class)
 	public ResponseEntity<ApiErrorResponse> badCredentials(BadCredentialsException ex) {
 		return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiErrorResponse.of("UNAUTHENTICATED", "Invalid credentials"));
@@ -37,6 +43,11 @@ public class TenantExceptionHandler {
 	@ExceptionHandler(TenantNotFoundException.class)
 	public ResponseEntity<ApiErrorResponse> notFound(TenantNotFoundException ex) {
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("TENANT_NOT_FOUND", ex.getMessage()));
+	}
+
+	@ExceptionHandler(TenantUserNotFoundException.class)
+	public ResponseEntity<ApiErrorResponse> userNotFound(TenantUserNotFoundException ex) {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("TENANT_USER_NOT_FOUND", ex.getMessage()));
 	}
 
 	@ExceptionHandler(TenantAccessException.class)

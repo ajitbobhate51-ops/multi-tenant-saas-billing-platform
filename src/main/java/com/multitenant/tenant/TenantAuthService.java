@@ -11,7 +11,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class TenantAuthService {
 
-	public static final String TENANT_ADMIN = "TENANT_ADMIN";
+	public static final String TENANT_ADMIN = TenantRole.TENANT_ADMIN.name();
+
+	public static final String TENANT_USER = TenantRole.TENANT_USER.name();
 
 	private final TenantRegistryLookup tenantRegistryLookup;
 
@@ -51,7 +53,7 @@ public class TenantAuthService {
 			user.setEmail(normalizeEmail(request.email()));
 			user.setPasswordHash(passwordEncoder.encode(request.password()));
 			user.setEnabled(true);
-			user.setRole(TENANT_ADMIN);
+			user.setRole(TenantRole.TENANT_ADMIN.name());
 			return TenantUserResponse.from(tenantUserRepository.saveAndFlush(user));
 		}));
 	}
@@ -65,6 +67,7 @@ public class TenantAuthService {
 			if (!user.isEnabled() || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
 				throw new BadCredentialsException("Invalid credentials");
 			}
+			TenantRole.from(user.getRole());
 			return jwtTokenService.issueToken(tenantId, user);
 		});
 	}

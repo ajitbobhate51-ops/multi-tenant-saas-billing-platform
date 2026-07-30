@@ -49,10 +49,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 			if (tenantId == null || role == null || role.isBlank() || email == null || email.isBlank()) {
 				throw new JwtException("JWT is missing required tenant authentication claims");
 			}
+			TenantRole tenantRole = TenantRole.from(role);
 			tenantRegistryLookup.requireActiveSchema(tenantId);
-			TenantPrincipal principal = new TenantPrincipal(email, tenantId, role);
+			TenantPrincipal principal = new TenantPrincipal(email, tenantId, tenantRole.name());
 			UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(principal, jwt,
-					List.of(new SimpleGrantedAuthority(role)));
+					List.of(new SimpleGrantedAuthority(tenantRole.name())));
 			SecurityContextHolder.getContext().setAuthentication(authentication);
 			filterChain.doFilter(request, response);
 		}

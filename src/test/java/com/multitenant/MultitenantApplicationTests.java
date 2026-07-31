@@ -533,6 +533,115 @@ class MultitenantApplicationTests {
 		mockMvc.perform(get("/api/tenants").header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
 				.andExpect(status().isOk());
 	}
+	@Test
+	void tenantAdminCanReEnableTenantUserAndUserCanLoginAgain() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_reenable", "Tenant Rbac Reenable",
+				"tenant_rbac_reenable", "admin@rbac-reenable.test");
+		long userId = createTenantUserAndReturnId(adminToken, "user@rbac-reenable.test", "TENANT_USER");
+
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", userId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.enabled").value(false));
+
+		mockMvc.perform(post("/api/auth/login")
+				.contentType("application/json")
+				.content("""
+						{"tenantId":"tenant_rbac_reenable","email":"user@rbac-reenable.test","password":"change-me-123"}
+						"""))
+				.andExpect(status().isUnauthorized())
+				.andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", userId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":true}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.enabled").value(true))
+				.andExpect(jsonPath("$.passwordHash").doesNotExist())
+				.andExpect(jsonPath("$.password").doesNotExist());
+
+		String userToken = login("tenant_rbac_reenable", "user@rbac-reenable.test", PASSWORD);
+		mockMvc.perform(get("/customers").header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk());
+	}
+
+	@Test
+	void tenantAdminPatchMissingUserReturnsNotFound() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_missing_user", "Tenant Rbac Missing User",
+				"tenant_rbac_missing_user", "admin@rbac-missing-user.test");
+
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", 999999L)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("TENANT_USER_NOT_FOUND"));
+	}
+
+	@Test
+	void tenantUserCreateValidationRejectsInvalidInput() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_validation", "Tenant Rbac Validation",
+				"tenant_rbac_validation", "admin@rbac-validation.test");
+
+		assertCreateTenantUserValidationFails(adminToken, """
+				{"email":"not-an-email","password":"change-me-123","role":"TENANT_USER"}
+				""");
+		assertCreateTenantUserValidationFails(adminToken, """
+				{"email":"","password":"change-me-123","role":"TENANT_USER"}
+				""");
+		assertCreateTenantUserValidationFails(adminToken, """
+				{"email":"short-password@rbac-validation.test","password":"short","role":"TENANT_USER"}
+				""");
+		assertCreateTenantUserValidationFails(adminToken, """
+				{"email":"blank-password@rbac-validation.test","password":"","role":"TENANT_USER"}
+				""");
+		assertCreateTenantUserValidationFails(adminToken, """
+				{"email":"missing-role@rbac-validation.test","password":"change-me-123"}
+				""");
+	}
+
+	@Test
+	void tenantUserEnabledPatchValidationRejectsMissingOrNullEnabled() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_enabled_validation", "Tenant Rbac Enabled Validation",
+				"tenant_rbac_enabled_validation", "admin@rbac-enabled-validation.test");
+		long userId = createTenantUserAndReturnId(adminToken, "user@rbac-enabled-validation.test", "TENANT_USER");
+
+		assertUpdateEnabledValidationFails(adminToken, userId, "{}");
+		assertUpdateEnabledValidationFails(adminToken, userId, """
+				{"enabled":null}
+				""");
+	}
+
+	@Test
+	void tenantUserManagementListAndPatchResponsesDoNotExposeSensitivePasswordFields() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_rbac_sensitive", "Tenant Rbac Sensitive",
+				"tenant_rbac_sensitive", "admin@rbac-sensitive.test");
+		long userId = createTenantUserAndReturnId(adminToken, "user@rbac-sensitive.test", "TENANT_USER");
+
+		mockMvc.perform(get("/api/tenant/users").header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[*].passwordHash").doesNotExist())
+				.andExpect(jsonPath("$[*].password").doesNotExist());
+
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", userId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.passwordHash").doesNotExist())
+				.andExpect(jsonPath("$.password").doesNotExist());
+	}
 	private void insertUsageRecord(String tenant, Long id, String description) {
 		executeInTenant(tenant, entityManager -> {
 			entityManager.createNativeQuery("create table if not exists phase1_usage_record "
@@ -616,6 +725,32 @@ class MultitenantApplicationTests {
 				.content("""
 						{"email":"%s","password":"%s","role":"%s"}
 						""".formatted(email, PASSWORD, role)));
+	}
+	private long createTenantUserAndReturnId(String adminToken, String email, String role) throws Exception {
+		String response = createTenantUser(adminToken, email, role)
+				.andExpect(status().isCreated())
+				.andReturn()
+				.getResponse()
+				.getContentAsString();
+		return Long.parseLong(response.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1"));
+	}
+
+	private void assertCreateTenantUserValidationFails(String adminToken, String body) throws Exception {
+		mockMvc.perform(post("/api/tenant/users")
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content(body))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+	}
+
+	private void assertUpdateEnabledValidationFails(String adminToken, long userId, String body) throws Exception {
+		mockMvc.perform(patch("/api/tenant/users/{userId}/enabled", userId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content(body))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
 	}
 	private String bearer(String token) {
 		return "Bearer " + token;

@@ -50,6 +50,10 @@ public class TenantExceptionHandler {
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("TENANT_USER_NOT_FOUND", ex.getMessage()));
 	}
 
+	@ExceptionHandler(BillingPlanNotFoundException.class)
+	public ResponseEntity<ApiErrorResponse> billingPlanNotFound(BillingPlanNotFoundException ex) {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("BILLING_PLAN_NOT_FOUND", ex.getMessage()));
+	}
 	@ExceptionHandler(TenantAccessException.class)
 	public ResponseEntity<ApiErrorResponse> forbidden(TenantAccessException ex) {
 		return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiErrorResponse.of("TENANT_ACCESS_DENIED", ex.getMessage()));

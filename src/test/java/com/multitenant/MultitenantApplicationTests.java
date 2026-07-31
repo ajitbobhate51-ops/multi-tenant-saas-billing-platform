@@ -642,6 +642,195 @@ class MultitenantApplicationTests {
 				.andExpect(jsonPath("$.passwordHash").doesNotExist())
 				.andExpect(jsonPath("$.password").doesNotExist());
 	}
+	@Test
+	void tenantAdminCreatesMonthlyAndYearlyPlansAndTenantUserCanReadThem() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_plans_basic", "Tenant Plans Basic", "tenant_plans_basic",
+				"admin@plans-basic.test");
+		createTenantUser(adminToken, "user@plans-basic.test", "TENANT_USER").andExpect(status().isCreated());
+		String userToken = login("tenant_plans_basic", "user@plans-basic.test", PASSWORD);
+
+		long monthlyPlanId = createBillingPlan(adminToken, " basic ", "Basic Plan", "Basic monthly plan", "499.00", "inr",
+				"MONTHLY")
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.code").value("BASIC"))
+				.andExpect(jsonPath("$.currency").value("INR"))
+				.andExpect(jsonPath("$.billingInterval").value("MONTHLY"))
+				.andExpect(jsonPath("$.active").value(true))
+				.andReturn()
+				.getResponse()
+				.getContentAsString()
+				.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1")
+				.lines()
+				.mapToLong(Long::parseLong)
+				.findFirst()
+				.orElseThrow();
+
+		createBillingPlan(adminToken, "PRO", "Pro Plan", "Annual pro plan", "4999.00", "USD", "YEARLY")
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.code").value("PRO"))
+				.andExpect(jsonPath("$.billingInterval").value("YEARLY"))
+				.andExpect(jsonPath("$.active").value(true));
+
+		Object[] stored = executeInTenant("tenant_plans_basic", entityManager -> (Object[]) entityManager
+				.createNativeQuery("select code, currency, amount from billing_plans where code = 'BASIC'")
+				.getSingleResult());
+		assertThat(stored[0]).isEqualTo("BASIC");
+		assertThat(stored[1]).isEqualTo("INR");
+		assertThat(stored[2].toString()).isEqualTo("499.00");
+
+		mockMvc.perform(get("/api/plans").header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.code == 'BASIC')]").exists())
+				.andExpect(jsonPath("$[?(@.code == 'PRO')]").exists());
+		mockMvc.perform(get("/api/plans/{planId}", monthlyPlanId).header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.code").value("BASIC"));
+		mockMvc.perform(get("/api/plans").header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.code == 'BASIC')]").exists());
+		mockMvc.perform(get("/api/plans/{planId}", monthlyPlanId).header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.code").value("BASIC"));
+	}
+
+	@Test
+	void tenantUserCannotCreateOrEnableDisablePlans() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_plans_user_forbidden", "Tenant Plans User Forbidden",
+				"tenant_plans_user_forbidden", "admin@plans-user-forbidden.test");
+		createTenantUser(adminToken, "user@plans-user-forbidden.test", "TENANT_USER").andExpect(status().isCreated());
+		String userToken = login("tenant_plans_user_forbidden", "user@plans-user-forbidden.test", PASSWORD);
+		long planId = createBillingPlanAndReturnId(adminToken, "BASIC", "Basic Plan", "499.00", "INR", "MONTHLY");
+
+		createBillingPlan(userToken, "USERPLAN", "User Plan", "499.00", "INR", "MONTHLY")
+				.andExpect(status().isForbidden());
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", planId)
+				.header("Authorization", bearer(userToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isForbidden());
+	}
+
+	@Test
+	void planEndpointsRejectUnauthenticatedAndPlatformAdminOnlyRequests() throws Exception {
+		mockMvc.perform(post("/api/plans")
+				.contentType("application/json")
+				.content(planJson("BASIC", "Basic Plan", null, "499.00", "INR", "MONTHLY")))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/plans"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/plans/{planId}", 1L))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/plans").header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	void billingPlanDuplicateCodeIsRejectedAfterNormalization() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_plans_duplicate", "Tenant Plans Duplicate",
+				"tenant_plans_duplicate", "admin@plans-duplicate.test");
+		createBillingPlan(adminToken, "basic", "Basic Plan", "499.00", "INR", "MONTHLY")
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.code").value("BASIC"));
+
+		createBillingPlan(adminToken, " BASIC ", "Other Basic", "699.00", "INR", "MONTHLY")
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.code").value("TENANT_CONFLICT"));
+	}
+
+	@Test
+	void billingPlanMissingPlanAndInvalidRequestsReturnJsonErrors() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_plans_validation", "Tenant Plans Validation",
+				"tenant_plans_validation", "admin@plans-validation.test");
+
+		mockMvc.perform(get("/api/plans/{planId}", 999999L).header("Authorization", bearer(adminToken)))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("BILLING_PLAN_NOT_FOUND"));
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", 999999L)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("BILLING_PLAN_NOT_FOUND"));
+
+		assertBillingPlanValidationFails(adminToken, planJson("", "Basic Plan", null, "499.00", "INR", "MONTHLY"),
+				"VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, planJson("BASIC", "", null, "499.00", "INR", "MONTHLY"),
+				"VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, planJson("BASIC", "Basic Plan", null, "-1.00", "INR", "MONTHLY"),
+				"VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, """
+				{"code":"BASIC","name":"Basic Plan","currency":"INR","billingInterval":"MONTHLY"}
+				""", "VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, planJson("BASIC", "Basic Plan", null, "499.00", "IN", "MONTHLY"),
+				"VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, """
+				{"code":"BASIC","name":"Basic Plan","amount":499.00,"currency":"INR"}
+				""", "VALIDATION_FAILED");
+		assertBillingPlanValidationFails(adminToken, planJson("BASIC", "Basic Plan", null, "499.00", "INR", "WEEKLY"),
+				"BAD_REQUEST");
+
+		long planId = createBillingPlanAndReturnId(adminToken, "VALID", "Valid Plan", "499.00", "INR", "MONTHLY");
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", planId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("{}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+	}
+
+	@Test
+	void tenantAdminCanDisableAndReEnableBillingPlan() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_plans_toggle", "Tenant Plans Toggle", "tenant_plans_toggle",
+				"admin@plans-toggle.test");
+		long planId = createBillingPlanAndReturnId(adminToken, "BASIC", "Basic Plan", "499.00", "INR", "MONTHLY");
+
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", planId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.active").value(false));
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", planId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":true}
+						"""))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.active").value(true));
+	}
+
+	@Test
+	void billingPlansRemainTenantIsolatedAndRejectCrossTenantHeader() throws Exception {
+		String tenantAToken = registerBootstrapAndLogin("tenant_plans_iso_a", "Tenant Plans Iso A", "tenant_plans_iso_a",
+				"admin@plans-iso-a.test");
+		String tenantBToken = registerBootstrapAndLogin("tenant_plans_iso_b", "Tenant Plans Iso B", "tenant_plans_iso_b",
+				"admin@plans-iso-b.test");
+		createBillingPlan(tenantAToken, "ALPHA", "Alpha Plan", "499.00", "INR", "MONTHLY")
+				.andExpect(status().isCreated());
+		createBillingPlan(tenantBToken, "BRAVO", "Bravo Plan", "599.00", "USD", "YEARLY")
+				.andExpect(status().isCreated());
+
+		mockMvc.perform(get("/api/plans").header("Authorization", bearer(tenantAToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.code == 'ALPHA')]").exists())
+				.andExpect(jsonPath("$[?(@.code == 'BRAVO')]").doesNotExist());
+		mockMvc.perform(get("/api/plans").header("Authorization", bearer(tenantBToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.code == 'BRAVO')]").exists())
+				.andExpect(jsonPath("$[?(@.code == 'ALPHA')]").doesNotExist());
+		mockMvc.perform(get("/api/plans")
+				.header("Authorization", bearer(tenantAToken))
+				.header("X-Tenant-ID", "tenant_plans_iso_b"))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
+	}
 	private void insertUsageRecord(String tenant, Long id, String description) {
 		executeInTenant(tenant, entityManager -> {
 			entityManager.createNativeQuery("create table if not exists phase1_usage_record "
@@ -717,6 +906,45 @@ class MultitenantApplicationTests {
 	}
 
 
+	private org.springframework.test.web.servlet.ResultActions createBillingPlan(String token, String code, String name,
+			String amount, String currency, String billingInterval) throws Exception {
+		return createBillingPlan(token, code, name, null, amount, currency, billingInterval);
+	}
+
+	private org.springframework.test.web.servlet.ResultActions createBillingPlan(String token, String code, String name,
+			String description, String amount, String currency, String billingInterval) throws Exception {
+		return mockMvc.perform(post("/api/plans")
+				.header("Authorization", bearer(token))
+				.contentType("application/json")
+				.content(planJson(code, name, description, amount, currency, billingInterval)));
+	}
+
+	private long createBillingPlanAndReturnId(String adminToken, String code, String name, String amount, String currency,
+			String billingInterval) throws Exception {
+		String response = createBillingPlan(adminToken, code, name, amount, currency, billingInterval)
+				.andExpect(status().isCreated())
+				.andReturn()
+				.getResponse()
+				.getContentAsString();
+		return Long.parseLong(response.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1"));
+	}
+
+	private void assertBillingPlanValidationFails(String adminToken, String body, String code) throws Exception {
+		mockMvc.perform(post("/api/plans")
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content(body))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value(code));
+	}
+
+	private String planJson(String code, String name, String description, String amount, String currency,
+			String billingInterval) {
+		String descriptionJson = description == null ? "" : "\"description\":\"" + description + "\",";
+		return """
+				{"code":"%s","name":"%s",%s"amount":%s,"currency":"%s","billingInterval":"%s"}
+				""".formatted(code, name, descriptionJson, amount, currency, billingInterval);
+	}
 	private org.springframework.test.web.servlet.ResultActions createTenantUser(String adminToken, String email, String role)
 			throws Exception {
 		return mockMvc.perform(post("/api/tenant/users")

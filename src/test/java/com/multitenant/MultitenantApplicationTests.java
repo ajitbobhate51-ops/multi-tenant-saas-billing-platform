@@ -831,6 +831,144 @@ class MultitenantApplicationTests {
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
 	}
+	@Test
+	void tenantAdminCreatesListsGetsAndCancelsSubscription() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_subscriptions_basic", "Tenant Subscriptions Basic",
+				"tenant_subscriptions_basic", "admin@subscriptions-basic.test");
+		long customerId = createCustomerAndReturnId(adminToken, "Alice Subscription");
+		long planId = createBillingPlanAndReturnId(adminToken, "BASIC", "Basic Plan", "499.00", "INR", "MONTHLY");
+
+		long subscriptionId = createSubscription(adminToken, customerId, planId)
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.customerId").value((int) customerId))
+				.andExpect(jsonPath("$.planId").value((int) planId))
+				.andExpect(jsonPath("$.planCode").value("BASIC"))
+				.andExpect(jsonPath("$.status").value("ACTIVE"))
+				.andExpect(jsonPath("$.startedAt").exists())
+				.andReturn()
+				.getResponse()
+				.getContentAsString()
+				.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1")
+				.lines()
+				.mapToLong(Long::parseLong)
+				.findFirst()
+				.orElseThrow();
+
+		mockMvc.perform(get("/api/subscriptions").header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.id == %s)]".formatted(subscriptionId)).exists());
+		mockMvc.perform(get("/api/subscriptions/{subscriptionId}", subscriptionId).header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("ACTIVE"));
+		mockMvc.perform(patch("/api/subscriptions/{subscriptionId}/cancel", subscriptionId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("{}"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("CANCELLED"))
+				.andExpect(jsonPath("$.cancelledAt").exists());
+		mockMvc.perform(patch("/api/subscriptions/{subscriptionId}/cancel", subscriptionId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("{}"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("CANCELLED"));
+	}
+
+	@Test
+	void subscriptionCreateRejectsDuplicateInactivePlanAndMissingReferences() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_subscriptions_reject", "Tenant Subscriptions Reject",
+				"tenant_subscriptions_reject", "admin@subscriptions-reject.test");
+		long customerId = createCustomerAndReturnId(adminToken, "Alice Reject");
+		long activePlanId = createBillingPlanAndReturnId(adminToken, "ACTIVE", "Active Plan", "499.00", "INR", "MONTHLY");
+		long inactivePlanId = createBillingPlanAndReturnId(adminToken, "INACTIVE", "Inactive Plan", "599.00", "INR", "MONTHLY");
+		mockMvc.perform(patch("/api/plans/{planId}/enabled", inactivePlanId)
+				.header("Authorization", bearer(adminToken))
+				.contentType("application/json")
+				.content("""
+						{"enabled":false}
+						"""))
+				.andExpect(status().isOk());
+
+		createSubscription(adminToken, customerId, activePlanId).andExpect(status().isCreated());
+		createSubscription(adminToken, customerId, activePlanId)
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.code").value("TENANT_CONFLICT"));
+		createSubscription(adminToken, customerId, inactivePlanId)
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.code").value("TENANT_CONFLICT"));
+		createSubscription(adminToken, 999999L, activePlanId)
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("CUSTOMER_NOT_FOUND"));
+		createSubscription(adminToken, customerId, 999999L)
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("BILLING_PLAN_NOT_FOUND"));
+	}
+
+	@Test
+	void tenantUserCanReadButCannotCreateOrCancelSubscriptions() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_subscriptions_user", "Tenant Subscriptions User",
+				"tenant_subscriptions_user", "admin@subscriptions-user.test");
+		createTenantUser(adminToken, "user@subscriptions-user.test", "TENANT_USER").andExpect(status().isCreated());
+		String userToken = login("tenant_subscriptions_user", "user@subscriptions-user.test", PASSWORD);
+		long customerId = createCustomerAndReturnId(adminToken, "Alice User");
+		long planId = createBillingPlanAndReturnId(adminToken, "BASIC", "Basic Plan", "499.00", "INR", "MONTHLY");
+		long subscriptionId = createSubscriptionAndReturnId(adminToken, customerId, planId);
+
+		mockMvc.perform(get("/api/subscriptions").header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.id == %s)]".formatted(subscriptionId)).exists());
+		mockMvc.perform(get("/api/subscriptions/{subscriptionId}", subscriptionId).header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.id").value((int) subscriptionId));
+		createSubscription(userToken, customerId, planId)
+				.andExpect(status().isForbidden());
+		mockMvc.perform(patch("/api/subscriptions/{subscriptionId}/cancel", subscriptionId)
+				.header("Authorization", bearer(userToken))
+				.contentType("application/json")
+				.content("{}"))
+				.andExpect(status().isForbidden());
+	}
+
+	@Test
+	void subscriptionsRejectCrossTenantAccessAndRemainTenantIsolated() throws Exception {
+		String tenantAToken = registerBootstrapAndLogin("tenant_subscriptions_iso_a", "Tenant Subscriptions Iso A",
+				"tenant_subscriptions_iso_a", "admin@subscriptions-iso-a.test");
+		String tenantBToken = registerBootstrapAndLogin("tenant_subscriptions_iso_b", "Tenant Subscriptions Iso B",
+				"tenant_subscriptions_iso_b", "admin@subscriptions-iso-b.test");
+		long customerAId = createCustomerAndReturnId(tenantAToken, "Alice A");
+		long planAId = createBillingPlanAndReturnId(tenantAToken, "ALPHA", "Alpha Plan", "499.00", "INR", "MONTHLY");
+		long subscriptionAId = createSubscriptionAndReturnId(tenantAToken, customerAId, planAId);
+		long customerBId = createCustomerAndReturnId(tenantBToken, "Bob B");
+		long planBId = createBillingPlanAndReturnId(tenantBToken, "BRAVO", "Bravo Plan", "599.00", "USD", "YEARLY");
+		long subscriptionBId = createSubscriptionAndReturnId(tenantBToken, customerBId, planBId);
+
+		mockMvc.perform(get("/api/subscriptions").header("Authorization", bearer(tenantAToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[?(@.planCode == 'ALPHA')]").exists())
+				.andExpect(jsonPath("$[?(@.planCode == 'BRAVO')]").doesNotExist());
+		mockMvc.perform(get("/api/subscriptions")
+				.header("Authorization", bearer(tenantAToken))
+				.header("X-Tenant-ID", "tenant_subscriptions_iso_b"))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
+	}
+
+	@Test
+	void subscriptionEndpointsRejectUnauthenticatedAndPlatformAdminOnlyRequests() throws Exception {
+		mockMvc.perform(post("/api/subscriptions")
+				.contentType("application/json")
+				.content("""
+						{"customerId":1,"planId":1}
+						"""))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/subscriptions"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/subscriptions/{subscriptionId}", 1L))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/subscriptions").header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
+				.andExpect(status().isUnauthorized());
+	}
 	private void insertUsageRecord(String tenant, Long id, String description) {
 		executeInTenant(tenant, entityManager -> {
 			entityManager.createNativeQuery("create table if not exists phase1_usage_record "
@@ -906,10 +1044,43 @@ class MultitenantApplicationTests {
 	}
 
 
+	private long createCustomerAndReturnId(String token, String name) throws Exception {
+		String response = mockMvc.perform(post("/customers")
+				.header("Authorization", bearer(token))
+				.contentType("application/json")
+				.content("""
+						{"name":"%s"}
+						""".formatted(name)))
+				.andExpect(status().isCreated())
+				.andReturn()
+				.getResponse()
+				.getContentAsString();
+		return Long.parseLong(response.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1"));
+	}
+
+	private org.springframework.test.web.servlet.ResultActions createSubscription(String token, long customerId, long planId)
+			throws Exception {
+		return mockMvc.perform(post("/api/subscriptions")
+				.header("Authorization", bearer(token))
+				.contentType("application/json")
+				.content("""
+						{"customerId":%s,"planId":%s}
+						""".formatted(customerId, planId)));
+	}
+
+	private long createSubscriptionAndReturnId(String adminToken, long customerId, long planId) throws Exception {
+		String response = createSubscription(adminToken, customerId, planId)
+				.andExpect(status().isCreated())
+				.andReturn()
+				.getResponse()
+				.getContentAsString();
+		return Long.parseLong(response.replaceAll(".*\\\"id\\\":([0-9]+).*", "$1"));
+	}
 	private org.springframework.test.web.servlet.ResultActions createBillingPlan(String token, String code, String name,
 			String amount, String currency, String billingInterval) throws Exception {
 		return createBillingPlan(token, code, name, null, amount, currency, billingInterval);
 	}
+
 
 	private org.springframework.test.web.servlet.ResultActions createBillingPlan(String token, String code, String name,
 			String description, String amount, String currency, String billingInterval) throws Exception {

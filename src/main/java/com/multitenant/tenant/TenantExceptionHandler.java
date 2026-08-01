@@ -54,6 +54,15 @@ public class TenantExceptionHandler {
 	public ResponseEntity<ApiErrorResponse> billingPlanNotFound(BillingPlanNotFoundException ex) {
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("BILLING_PLAN_NOT_FOUND", ex.getMessage()));
 	}
+	@ExceptionHandler(CustomerNotFoundException.class)
+	public ResponseEntity<ApiErrorResponse> customerNotFound(CustomerNotFoundException ex) {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("CUSTOMER_NOT_FOUND", ex.getMessage()));
+	}
+
+	@ExceptionHandler(SubscriptionNotFoundException.class)
+	public ResponseEntity<ApiErrorResponse> subscriptionNotFound(SubscriptionNotFoundException ex) {
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("SUBSCRIPTION_NOT_FOUND", ex.getMessage()));
+	}
 	@ExceptionHandler(TenantAccessException.class)
 	public ResponseEntity<ApiErrorResponse> forbidden(TenantAccessException ex) {
 		return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiErrorResponse.of("TENANT_ACCESS_DENIED", ex.getMessage()));

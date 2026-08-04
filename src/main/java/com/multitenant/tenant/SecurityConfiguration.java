@@ -50,6 +50,7 @@ public class SecurityConfiguration {
 						.requestMatchers(HttpMethod.POST, "/api/subscriptions").hasAuthority(TenantAuthService.TENANT_ADMIN)
 						.requestMatchers(HttpMethod.PATCH, "/api/subscriptions/*/cancel").hasAuthority(TenantAuthService.TENANT_ADMIN)
 						.requestMatchers(HttpMethod.GET, "/api/subscriptions", "/api/subscriptions/*").hasAnyAuthority(TenantAuthService.TENANT_ADMIN, TenantAuthService.TENANT_USER)
+						.requestMatchers(HttpMethod.GET, "/api/pricing/*").hasAnyAuthority(TenantAuthService.TENANT_ADMIN, TenantAuthService.TENANT_USER)
 						.requestMatchers("/api/tenants/**").hasAuthority(PlatformAdminTokenFilter.PLATFORM_ADMIN)
 						.anyRequest().authenticated())
 				.addFilterBefore(platformAdminTokenFilter, UsernamePasswordAuthenticationFilter.class)

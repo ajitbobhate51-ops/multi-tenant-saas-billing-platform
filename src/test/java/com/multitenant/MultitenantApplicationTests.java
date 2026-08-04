@@ -969,6 +969,61 @@ class MultitenantApplicationTests {
 		mockMvc.perform(get("/api/subscriptions").header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
 				.andExpect(status().isUnauthorized());
 	}
+	@Test
+	void pricingCalculationReturnsPlanAmountForTenantAdminAndUser() throws Exception {
+		String adminToken = registerBootstrapAndLogin("tenant_pricing_basic", "Tenant Pricing Basic",
+				"tenant_pricing_basic", "admin@pricing-basic.test");
+		createTenantUser(adminToken, "user@pricing-basic.test", "TENANT_USER").andExpect(status().isCreated());
+		String userToken = login("tenant_pricing_basic", "user@pricing-basic.test", PASSWORD);
+		long customerId = createCustomerAndReturnId(adminToken, "Alice Pricing");
+		long planId = createBillingPlanAndReturnId(adminToken, "GROWTH", "Growth Plan", "1234.56", "USD", "YEARLY");
+		long subscriptionId = createSubscriptionAndReturnId(adminToken, customerId, planId);
+
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", subscriptionId).header("Authorization", bearer(adminToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.subscriptionId").value((int) subscriptionId))
+				.andExpect(jsonPath("$.customerId").value((int) customerId))
+				.andExpect(jsonPath("$.planId").value((int) planId))
+				.andExpect(jsonPath("$.planName").value("Growth Plan"))
+				.andExpect(jsonPath("$.currency").value("USD"))
+				.andExpect(jsonPath("$.billingInterval").value("YEARLY"))
+				.andExpect(jsonPath("$.subtotal").value(1234.56))
+				.andExpect(jsonPath("$.discount").value(0))
+				.andExpect(jsonPath("$.tax").value(0))
+				.andExpect(jsonPath("$.finalAmount").value(1234.56))
+				.andExpect(jsonPath("$.subscriptionStatus").value("ACTIVE"));
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", subscriptionId).header("Authorization", bearer(userToken)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.finalAmount").value(1234.56));
+	}
+
+	@Test
+	void pricingRejectsMissingUnauthenticatedPlatformAndCrossTenantRequests() throws Exception {
+		String tenantAToken = registerBootstrapAndLogin("tenant_pricing_iso_a", "Tenant Pricing Iso A",
+				"tenant_pricing_iso_a", "admin@pricing-iso-a.test");
+		String tenantBToken = registerBootstrapAndLogin("tenant_pricing_iso_b", "Tenant Pricing Iso B",
+				"tenant_pricing_iso_b", "admin@pricing-iso-b.test");
+		long customerAId = createCustomerAndReturnId(tenantAToken, "Alice Pricing A");
+		long planAId = createBillingPlanAndReturnId(tenantAToken, "ALPHA", "Alpha Pricing", "499.00", "INR", "MONTHLY");
+		long subscriptionAId = createSubscriptionAndReturnId(tenantAToken, customerAId, planAId);
+		long customerBId = createCustomerAndReturnId(tenantBToken, "Bob Pricing B");
+		long planBId = createBillingPlanAndReturnId(tenantBToken, "BRAVO", "Bravo Pricing", "599.00", "USD", "YEARLY");
+		createSubscriptionAndReturnId(tenantBToken, customerBId, planBId);
+
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", 999999L).header("Authorization", bearer(tenantAToken)))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("SUBSCRIPTION_NOT_FOUND"));
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", subscriptionAId))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", subscriptionAId)
+				.header("X-Platform-Admin-Token", PLATFORM_ADMIN_TOKEN))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/pricing/{subscriptionId}", subscriptionAId)
+				.header("Authorization", bearer(tenantAToken))
+				.header("X-Tenant-ID", "tenant_pricing_iso_b"))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("TENANT_ACCESS_DENIED"));
+	}
 	private void insertUsageRecord(String tenant, Long id, String description) {
 		executeInTenant(tenant, entityManager -> {
 			entityManager.createNativeQuery("create table if not exists phase1_usage_record "

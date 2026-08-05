@@ -59,15 +59,24 @@ public class TenantAuthService {
 	}
 
 	public LoginResponse login(LoginRequest request) {
+
 		String tenantId = TenantIdentifier.normalize(request.tenantId());
+
 		tenantRegistryLookup.requireActiveSchema(tenantId);
+
 		return executeInTenant(tenantId, () -> {
-			TenantUser user = tenantUserRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
+
+			TenantUser user = tenantUserRepository
+					.findByEmailIgnoreCase(normalizeEmail(request.email()))
 					.orElseThrow(() -> new BadCredentialsException("Invalid credentials"));
-			if (!user.isEnabled() || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+
+			if (!user.isEnabled()
+					|| !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
 				throw new BadCredentialsException("Invalid credentials");
 			}
+
 			TenantRole.from(user.getRole());
+
 			return jwtTokenService.issueToken(tenantId, user);
 		});
 	}

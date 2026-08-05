@@ -11,12 +11,14 @@ import com.multitenant.tenant.SchemaPerTenantConnectionProvider;
 import com.multitenant.tenant.Tenant;
 import com.multitenant.tenant.TenantContext;
 import com.multitenant.tenant.TenantIdentifier;
+import com.multitenant.tenant.TenantProvisioningService;
 import com.multitenant.tenant.TenantRepository;
 import com.multitenant.tenant.TenantStatus;
 import com.multitenant.tenant.TenantUser;
 import com.multitenant.tenant.TenantUserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,6 +66,9 @@ class MultitenantApplicationTests {
 
 	@Autowired
 	private TenantRepository tenantRepository;
+
+	@Autowired
+	private TenantProvisioningService tenantProvisioningService;
 
 	@Autowired
 	private TenantUserRepository tenantUserRepository;
@@ -307,6 +312,25 @@ class MultitenantApplicationTests {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.tenantId").value("tenant_retry"))
 				.andExpect(jsonPath("$.status").value("ACTIVE"));
+	}
+
+	@Test
+	void migratesActiveTenantSchemasWithPendingBillingAndSubscriptionMigrations() throws Exception {
+		createTenantSchemaMigratedThroughV3("tenant_legacy_v3");
+		saveRegistryRecord("tenant_legacy_v3", "Tenant Legacy V3", "tenant_legacy_v3", TenantStatus.ACTIVE,
+				ProvisioningStatus.ACTIVE);
+
+		assertThat(tableExists("tenant_legacy_v3", "customers")).isTrue();
+		assertThat(tableExists("tenant_legacy_v3", "tenant_users")).isTrue();
+		assertThat(tableExists("tenant_legacy_v3", "billing_plans")).isFalse();
+		assertThat(tableExists("tenant_legacy_v3", "subscriptions")).isFalse();
+
+		tenantProvisioningService.migrateActiveTenants();
+
+		assertThat(tableExists("tenant_legacy_v3", "billing_plans")).isTrue();
+		assertThat(tableExists("tenant_legacy_v3", "subscriptions")).isTrue();
+		assertThat(successfulTenantMigrationCount("tenant_legacy_v3", "4")).isEqualTo(1);
+		assertThat(successfulTenantMigrationCount("tenant_legacy_v3", "5")).isEqualTo(1);
 	}
 
 	@Test
@@ -1261,6 +1285,37 @@ class MultitenantApplicationTests {
 		try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
 			connection.setSchema("public");
 			statement.execute("drop table if exists " + schemaName + ".tenant_schema_info");
+		}
+	}
+
+	private void createTenantSchemaMigratedThroughV3(String schemaName) {
+		Flyway.configure()
+				.dataSource(dataSource)
+				.schemas(schemaName)
+				.defaultSchema(schemaName)
+				.createSchemas(true)
+				.locations("classpath:db/tenant")
+				.placeholders(java.util.Map.of("schemaName", schemaName))
+				.target("3")
+				.load()
+				.migrate();
+	}
+
+	private boolean tableExists(String schemaName, String tableName) throws Exception {
+		try (Connection connection = dataSource.getConnection();
+				var tables = connection.getMetaData().getTables(null, schemaName, tableName, new String[] { "TABLE" })) {
+			return tables.next();
+		}
+	}
+
+	private long successfulTenantMigrationCount(String schemaName, String version) throws Exception {
+		try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
+			connection.setSchema(schemaName);
+			try (var resultSet = statement.executeQuery(
+					"select count(*) from flyway_schema_history where version = '" + version + "' and success = true")) {
+				resultSet.next();
+				return resultSet.getLong(1);
+			}
 		}
 	}
 

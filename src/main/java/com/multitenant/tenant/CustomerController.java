@@ -9,22 +9,20 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/customers")
 public class CustomerController {
 
-    private final CustomerRepository customerRepository;
+    private final CustomerService customerService;
 
-    public CustomerController(CustomerRepository customerRepository) {
-        this.customerRepository = customerRepository;
+    public CustomerController(CustomerService customerService) {
+        this.customerService = customerService;
     }
 
-    // Create customer
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Customer createCustomer(@RequestBody Customer customer) {
-        return customerRepository.save(customer);
+        return customerService.createCustomer(customer);
     }
 
-    // Get all customers of current tenant
     @GetMapping
     public List<Customer> getCustomers() {
-        return customerRepository.findAll();
+        return customerService.getAllCustomers();
     }
 }

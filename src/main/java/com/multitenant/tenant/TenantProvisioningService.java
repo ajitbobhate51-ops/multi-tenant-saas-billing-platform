@@ -52,6 +52,18 @@ public class TenantProvisioningService {
 		return TenantResponse.from(findTenant(tenantId));
 	}
 
+	public void migrateActiveTenants() {
+		List<String> tenantIds = tenantRepository
+				.findByStatusAndProvisioningStatus(TenantStatus.ACTIVE, ProvisioningStatus.ACTIVE)
+				.stream()
+				.map(Tenant::getTenantId)
+				.toList();
+
+		for (String tenantId : tenantIds) {
+			provisionTenant(tenantId);
+		}
+	}
+
 	/*
 	 * Provision tenant.
 	 *
